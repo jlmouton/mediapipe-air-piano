@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang='en' class=''>
+<head>
+  <meta charset='UTF-8'>
+  <title>Air Piano</title>
+
+  <script src="hands.js" crossorigin="anonymous"></script>
+
+  <style>
+    video {
+      clear: both;
+      display: block;
+      transform: rotateY(180deg);
+      -webkit-transform: rotateY(180deg);
+      -moz-transform: rotateY(180deg);
+    }
+    .output_canvas {
+      transform: rotateY(180deg);
+      -webkit-transform: rotateY(180deg);
+      -moz-transform: rotateY(180deg);
+    }
+  </style>
+
+  <body>
+    <div style="position: relative;">
+      <video id="webcam" style="position: abso" autoplay playsinline></video>
+      <canvas class="output_canvas" id="output_canvas" style="position: absolute; left: 0px; top: 0px;"></canvas>
+    </div>
+
+    <script type="module" src="airpiano.js"></script>
+  </body>
+</html>
