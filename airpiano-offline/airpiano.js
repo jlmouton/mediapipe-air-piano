@@ -63,24 +63,31 @@ async function predictWebcam() {
     }
     canvasCtx.save();
     canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-    if (results.landmarks) {
-        for (const landmarks of results.landmarks) {
-            // draw the 5 finger tips
-            drawFinger(canvasCtx, landmarks[4]);
-            drawFinger(canvasCtx, landmarks[8]);
-            drawFinger(canvasCtx, landmarks[12]);
-            drawFinger(canvasCtx, landmarks[16]);
-            drawFinger(canvasCtx, landmarks[20]);
-            // draw the wrist point
-            drawFinger(canvasCtx, landmarks[0]);
+    if (results.landmarks && results.landmarks.length) {
+        const landmarks = results.landmarks[0];
+        // calculate the distance between each fingertip and the wrist
+        // to decide if the finger is in "play" position or not
+        let play1 = distance(landmarks[4], landmarks[0]) < 0.3;
+        let play2 = distance(landmarks[8], landmarks[0]) < 0.4;
+        let play3 = distance(landmarks[12], landmarks[0]) < 0.4;
+        let play4 = distance(landmarks[16], landmarks[0]) < 0.4;
+        let play5 = distance(landmarks[20], landmarks[0]) < 0.4;
 
-            // play (or stop playing) the note associated to each finger
-            playFingerIfCloseToWrist(514, 0, landmarks[4], landmarks[0]);
-            playFingerIfCloseToWrist(577, 1, landmarks[8], landmarks[0]);
-            playFingerIfCloseToWrist(647, 2, landmarks[12], landmarks[0]);
-            playFingerIfCloseToWrist(686, 3, landmarks[16], landmarks[0]);
-            playFingerIfCloseToWrist(770, 4, landmarks[20], landmarks[0]);
-        }
+        // draw the 5 finger tip locations
+        drawFinger(canvasCtx, landmarks[4], play1);
+        drawFinger(canvasCtx, landmarks[8], play2);
+        drawFinger(canvasCtx, landmarks[12], play3);
+        drawFinger(canvasCtx, landmarks[16], play4);
+        drawFinger(canvasCtx, landmarks[20], play5);
+        // draw the wrist location
+        drawFinger(canvasCtx, landmarks[0], true);
+
+        // play (or stop playing) the note associated to each finger
+        playFingerIfCloseToWrist(514, 0, play1);
+        playFingerIfCloseToWrist(577, 1, play2);
+        playFingerIfCloseToWrist(647, 2, play3);
+        playFingerIfCloseToWrist(686, 3, play4);
+        playFingerIfCloseToWrist(770, 4, play5);
     }
     canvasCtx.restore();
 
@@ -88,27 +95,30 @@ async function predictWebcam() {
     window.requestAnimationFrame(predictWebcam);
 }
 
-
-// very basic point drawing function
-function drawFinger(ctx, fingerTip) {
-  if (fingerTip.z > 0) {
-    canvasCtx.fillStyle = "#FF0000";
-  } else {
-    canvasCtx.fillStyle = "#00FF00";
-  }
-  let x = Math.abs(fingerTip.x * canvasCtx.canvas.width);
-  let y = Math.abs(fingerTip.y * canvasCtx.canvas.height);
-  canvasCtx.fillRect(x-5, y-5, 10, 10);
+// distance between 2 landmarks
+function distance(landmark1, landmark2) {
+  return Math.sqrt((landmark1.y - landmark2.y)**2 + (landmark1.x - landmark2.x)**2);
 }
 
-function playFingerIfCloseToWrist(frequency, fingerNb, fingerTip, wrist) {
-  var distance = Math.sqrt((fingerTip.y - wrist.y)**2 + (fingerTip.x - wrist.x)**2);
-  if (distance < 0.3) {
+// very basic point drawing function
+function drawFinger(ctx, fingerTip, active) {
+  if (active) {
+    ctx.fillStyle = "#FF0000";
+  } else {
+    ctx.fillStyle = "#00FF00";
+  }
+  let x = Math.abs(fingerTip.x * ctx.canvas.width);
+  let y = Math.abs(fingerTip.y * ctx.canvas.height);
+  ctx.fillRect(x-5, y-5, 10, 10);
+}
+
+function playFingerIfCloseToWrist(frequency, fingerNb, active) {
+  if (active) {
     if(!oscillators[fingerNb]) {
       oscillators[fingerNb] = playNote(frequency, 1.0);
     }
   } else {
-    if (distance >= 0.3 && oscillators[fingerNb]) {
+    if (oscillators[fingerNb]) {
       stopNote(oscillators[fingerNb]);
       oscillators[fingerNb] = 0;
     }
@@ -124,7 +134,7 @@ function playNote(frequency, volume) {
     
   // create a new oscillator for each note
   var osc = ctx.createOscillator();
-  osc.type = 'square';
+  osc.type = 'square'; // 'sine', 'triangle', 'sawtooth';
   osc.connect(gainNode);
 
   // set frequency and volume 
