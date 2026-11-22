@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dual-Hand Air Synth — MediaPipe 2-Hand Fractal Pad &amp; Bowed Violin</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@400;600;700&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="studio-container">
+
+    <!-- MASTER TOP HUD -->
+    <header class="master-hud">
+      <div class="brand-section">
+        <span class="brand-icon">🖐️</span>
+        <div class="brand-title">
+          <h1>DUAL-HAND AIR SYNTH DEMO</h1>
+          <span class="brand-badge">Left Hand: Seahorse Valley Pad (C3–F2 Mono) • Right Hand: Bowed Violin (C4–G4 Poly + Palm Pitch Bend)</span>
+        </div>
+      </div>
+
+      <div class="hud-actions">
+        <button id="btn-audio-start-v2" class="btn-studio primary">▶ Start Audio Engine</button>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <label for="master-volume-v2" style="font-size: 12px; color: var(--text-dim);">Vol:</label>
+          <input type="range" id="master-volume-v2" min="0" max="100" value="75" style="width: 80px; accent-color: var(--accent-cyan);">
+          <span id="volume-val-v2" style="font-family: var(--font-mono); font-size: 11px; color: var(--accent-cyan); width: 35px;">75%</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- 1. TOP VIDEO FEED + FINGERTIP/PALM OVERLAY + YOUTUBE GESTURE PLAYER -->
+    <section class="video-stage-card">
+      <div class="video-viewport-wrapper">
+        <video id="webcam" autoplay playsinline></video>
+        <canvas class="output_canvas" id="output_canvas"></canvas>
+      </div>
+
+      <div class="video-side-controls">
+        <div class="youtube-control-box" id="youtube-control-box">
+          <div class="youtube-header-row">
+            <label for="youtube-video-select" class="youtube-label">🎬 YouTube Drum Track</label>
+            <button id="btn-youtube-reload" class="btn-studio btn-reload-sm" type="button" title="Reload video to the beginning in pause mode">
+              ↺ Reload
+            </button>
+          </div>
+          <select id="youtube-video-select" class="youtube-select" title="Select YouTube backing video">
+            <option value="https://www.youtube.com/watch?v=xeqUit1EHIw" selected>Electro Funk Drum Loops 100 BPM // The Hybrid Drummer</option>
+            <option value="https://www.youtube.com/watch?v=trzD7Eqq2xA">Funk Drum Loop 90 BPM // The Hybrid Drummer</option>
+            <option value="https://www.youtube.com/watch?v=KatkfHwpawg">Synth Drum Loops 90 BPM // The Hybrid Drummer</option>
+            <option value="https://www.youtube.com/watch?v=hEVxMDI5c94">Slow 6/8 drum loop 60 BPM // The Hybrid Drummer</option>
+          </select>
+          <div class="youtube-hint">Left Hand: Open ➔ All 5 Fingers Together to Play / Pause</div>
+        </div>
+
+        <div id="youtube-thumbnail-container" class="youtube-thumbnail-container is-hidden" style="display: none;">
+          <div id="youtube-player"></div>
+        </div>
+
+        <div class="hand-swap-box">
+          <label class="switch" title="Switch Left and Right hand recognition (for mirrored video cameras)">
+            <input type="checkbox" id="toggle-swap-hands">
+            <span class="slider"></span>
+          </label>
+          <label for="toggle-swap-hands" class="hand-swap-label">
+            ⇄ Switch Left / Right Hands (Mirror Mode)
+          </label>
+        </div>
+
+        <div class="hand-status-box">
+          <div><strong style="color: var(--accent-cyan);">Left Hand (Mono):</strong> <span id="lbl-left-status">No notes</span></div>
+          <div><strong style="color: var(--accent-magenta);">Right Hand (Poly):</strong> <span id="lbl-right-status">No notes</span></div>
+          <div><strong style="color: var(--accent-gold);">Right Pitch Bend:</strong> <span id="lbl-pitch-bend">0 ct</span></div>
+          <div><strong style="color: var(--accent-purple);">YouTube Drum Track:</strong> <span id="lbl-youtube-status">Paused</span></div>
+          <div><strong style="color: var(--accent-green);">Calibration:</strong> <span id="lbl-calib-status">Default Ratios</span></div>
+        </div>
+
+        <a href="calibrate.html" id="btn-open-calibrator" class="btn-studio" style="text-decoration: none; text-align: center; justify-content: center; border-color: var(--accent-cyan); color: var(--accent-cyan);">
+          🎯 Calibrate Hands (Capture &amp; Label)
+        </a>
+      </div>
+    </section>
+
+    <!-- 2. TWO-COLUMN SPLIT: LEFT = FRACTAL SYNTH (SEAHORSE VALLEY PAD), RIGHT = BOWED VIOLIN ENGINE -->
+    <main class="studio-grid">
+
+      <!-- LEFT COLUMN: FRACTAL SYNTH (SEAHORSE VALLEY PAD PRESET) -->
+      <section class="rack-card" id="panel-fractal-synth">
+        <div class="rack-header">
+          <div class="rack-title">
+            <span>🌌 Left Hand — Fractal Synth (Seahorse Valley Pad)</span>
+          </div>
+          <span class="brand-badge" style="color: var(--accent-cyan);">Monophonic • C3–F2</span>
+        </div>
+
+        <div class="synth-desc">
+          Thumb (1): <strong>C3</strong> • Index (2): <strong>B2</strong> • Middle (3): <strong>A2</strong> • Ring (4): <strong>G2</strong> • Pinky (5): <strong>F2</strong> • Vertical Palm (↑ 25% = 0%→40% Wavefolder, No Pitch Bend)
+        </div>
+
+        <div class="knobs-grid">
+          <div class="knob-control" id="knob-drone-morph">
+            <div class="knob-svg-wrapper">
+              <svg viewBox="0 0 52 52">
+                <circle class="knob-track" cx="26" cy="26" r="20"></circle>
+                <circle class="knob-progress" cx="26" cy="26" r="20"></circle>
+              </svg>
+              <div class="knob-inner-body"></div>
+            </div>
+            <span class="knob-label">Dual Morph</span>
+            <span class="knob-val">45%</span>
+          </div>
+
+          <div class="knob-control" id="knob-drone-swirl">
+            <div class="knob-svg-wrapper">
+              <svg viewBox="0 0 52 52">
+                <circle class="knob-track" cx="26" cy="26" r="20"></circle>
+                <circle class="knob-progress" cx="26" cy="26" r="20"></circle>
+              </svg>
+              <div class="knob-inner-body"></div>
+            </div>
+            <span class="knob-label">Swirl LFO</span>
+            <span class="knob-val">0.05 Hz</span>
+          </div>
+
+          <div class="knob-control" id="knob-drone-wavefolder">
+            <div class="knob-svg-wrapper">
+              <svg viewBox="0 0 52 52">
+                <circle class="knob-track" cx="26" cy="26" r="20"></circle>
+                <circle class="knob-progress" cx="26" cy="26" r="20"></circle>
+              </svg>
+              <div class="knob-inner-body"></div>
+            </div>
+            <span class="knob-label">Wavefolder</span>
+            <span class="knob-val">0%</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- RIGHT COLUMN: BOWED VIOLIN STRING PHYSICAL SYNTHESIS ENGINE -->
+      <section class="rack-card" id="panel-bowed-violin">
+        <div class="rack-header">
+          <div class="rack-title">
+            <span>🎻 Right Hand — Bowed Violin String Engine</span>
+          </div>
+          <span class="brand-badge" style="color: var(--accent-magenta);">Polyphonic • C4–G4 + Palm Pitch Bend</span>
+        </div>
+
+        <div class="synth-desc">
+          Thumb (1): <strong>C4</strong> • Index (2): <strong>D4</strong> • Middle (3): <strong>E4</strong> • Ring (4): <strong>F4</strong> • Pinky (5): <strong>G4</strong> (1/2 Viewport = 1 Tone)
+        </div>
+
+        <div class="knobs-grid">
+          <div class="knob-control" id="knob-bow-pressure">
+            <div class="knob-svg-wrapper">
+              <svg viewBox="0 0 52 52">
+                <circle class="knob-track" cx="26" cy="26" r="20"></circle>
+                <circle class="knob-progress" cx="26" cy="26" r="20"></circle>
+              </svg>
+              <div class="knob-inner-body"></div>
+            </div>
+            <span class="knob-label">Bow Force</span>
+            <span class="knob-val">55%</span>
+          </div>
+
+          <div class="knob-control" id="knob-bow-velocity">
+            <div class="knob-svg-wrapper">
+              <svg viewBox="0 0 52 52">
+                <circle class="knob-track" cx="26" cy="26" r="20"></circle>
+                <circle class="knob-progress" cx="26" cy="26" r="20"></circle>
+              </svg>
+              <div class="knob-inner-body"></div>
+            </div>
+            <span class="knob-label">Bow Speed</span>
+            <span class="knob-val">65%</span>
+          </div>
+
+          <div class="knob-control" id="knob-bow-position">
+            <div class="knob-svg-wrapper">
+              <svg viewBox="0 0 52 52">
+                <circle class="knob-track" cx="26" cy="26" r="20"></circle>
+                <circle class="knob-progress" cx="26" cy="26" r="20"></circle>
+              </svg>
+              <div class="knob-inner-body"></div>
+            </div>
+            <span class="knob-label">Bow Pos (β)</span>
+            <span class="knob-val">11%</span>
+          </div>
+
+          <div class="knob-control" id="knob-rosin-grit">
+            <div class="knob-svg-wrapper">
+              <svg viewBox="0 0 52 52">
+                <circle class="knob-track" cx="26" cy="26" r="20"></circle>
+                <circle class="knob-progress" cx="26" cy="26" r="20"></circle>
+              </svg>
+              <div class="knob-inner-body"></div>
+            </div>
+            <span class="knob-label">Rosin Grit</span>
+            <span class="knob-val">20%</span>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- 3. BOTTOM FULL-WIDTH STUDIO AUDIO FX RACK (SHARED BY BOTH SYNTHS) -->
+    <section class="rack-card" id="panel-fx-pipeline">
+      <div class="rack-header">
+        <div class="rack-title">
+          <span>🎛️ Studio Audio Effects Pipeline (Filter ➔ Wavefolder ➔ Chorus ➔ Delay ➔ FDN Reverb ➔ Limiter)</span>
+        </div>
+        <label class="switch" title="Toggle Studio Audio Effects Pipeline">
+          <input type="checkbox" id="toggle-fx-master-v2" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="fx-rack-grid">
+        <!-- 1. Filter -->
+        <div class="fx-module knobs-2">
+          <div class="fx-header">
+            <span class="fx-title">🎚️ Multi-Mode Filter</span>
+            <select id="filter-type-select-v2" class="mini-select" title="Filter Response Curve">
+              <option value="lowpass" selected>Lowpass 24dB</option>
+              <option value="highpass">Highpass 24dB</option>
+              <option value="bandpass">Bandpass</option>
+              <option value="notch">Notch / Reject</option>
+            </select>
+          </div>
+          <div class="knobs-grid">
+            <div class="knob-control" id="knob-filter-cutoff">
+              <div class="knob-svg-wrapper">
+                <svg viewBox="0 0 52 52">
+                  <circle class="knob-track" cx="26" cy="26" r="20"></circle>
+                  <circle class="knob-progress" cx="26" cy="26" r="20"></circle>
+                </svg>
+                <div class="knob-inner-body"></div>
+              </div>
+              <span class="knob-label">Cutoff</span>
+              <span class="knob-val">4500 Hz</span>
+            </div>
+            <div class="knob-control" id="knob-filter-res">
+              <div class="knob-svg-wrapper">
+                <svg viewBox="0 0 52 52">
+                  <circle class="knob-track" cx="26" cy="26" r="20"></circle>
+                  <circle class="knob-progress" cx="26" cy="26" r="20"></circle>
+                </svg>
+                <div class="knob-inner-body"></div>
+              </div>
+              <span class="knob-label">Resonance</span>
+              <span class="knob-val">1.2</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. Wavefolder / Drive -->
+        <div class="fx-module knobs-1">
+          <div class="fx-header">
+            <span class="fx-title">🔥 Wavefolder</span>
+          </div>
+          <div class="knobs-grid">
+            <div class="knob-control" id="knob-fx-drive">
+              <div class="knob-svg-wrapper">
+                <svg viewBox="0 0 52 52">
+                  <circle class="knob-track" cx="26" cy="26" r="20"></circle>
+                  <circle class="knob-progress" cx="26" cy="26" r="20"></circle>
+                </svg>
+                <div class="knob-inner-body"></div>
+              </div>
+              <span class="knob-label">Fold / Sat</span>
+              <span class="knob-val">0%</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. Stereo Chorus -->
+        <div class="fx-module knobs-1">
+          <div class="fx-header">
+            <span class="fx-title">✨ Vector Chorus</span>
+          </div>
+          <div class="knobs-grid">
+            <div class="knob-control" id="knob-fx-chorus-mix">
+              <div class="knob-svg-wrapper">
+                <svg viewBox="0 0 52 52">
+                  <circle class="knob-track" cx="26" cy="26" r="20"></circle>
+                  <circle class="knob-progress" cx="26" cy="26" r="20"></circle>
+                </svg>
+                <div class="knob-inner-body"></div>
+              </div>
+              <span class="knob-label">Mix</span>
+              <span class="knob-val">25%</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4. Ping-Pong Delay -->
+        <div class="fx-module knobs-3">
+          <div class="fx-header">
+            <span class="fx-title">🔁 Ping-Pong Echo</span>
+          </div>
+          <div class="knobs-grid">
+            <div class="knob-control" id="knob-fx-delay-mix">
+              <div class="knob-svg-wrapper">
+                <svg viewBox="0 0 52 52">
+                  <circle class="knob-track" cx="26" cy="26" r="20"></circle>
+                  <circle class="knob-progress" cx="26" cy="26" r="20"></circle>
+                </svg>
+                <div class="knob-inner-body"></div>
+              </div>
+              <span class="knob-label">Mix</span>
+              <span class="knob-val">20%</span>
+            </div>
+            <div class="knob-control" id="knob-fx-delay-time">
+              <div class="knob-svg-wrapper">
+                <svg viewBox="0 0 52 52">
+                  <circle class="knob-track" cx="26" cy="26" r="20"></circle>
+                  <circle class="knob-progress" cx="26" cy="26" r="20"></circle>
+                </svg>
+                <div class="knob-inner-body"></div>
+              </div>
+              <span class="knob-label">Time</span>
+              <span class="knob-val">350 ms</span>
+            </div>
+            <div class="knob-control" id="knob-fx-delay-feedback">
+              <div class="knob-svg-wrapper">
+                <svg viewBox="0 0 52 52">
+                  <circle class="knob-track" cx="26" cy="26" r="20"></circle>
+                  <circle class="knob-progress" cx="26" cy="26" r="20"></circle>
+                </svg>
+                <div class="knob-inner-body"></div>
+              </div>
+              <span class="knob-label">Feedback</span>
+              <span class="knob-val">40%</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 5. FDN Reverb -->
+        <div class="fx-module knobs-2">
+          <div class="fx-header">
+            <span class="fx-title">🌊 FDN Diffusion Reverb</span>
+          </div>
+          <div class="knobs-grid">
+            <div class="knob-control" id="knob-fx-reverb-mix">
+              <div class="knob-svg-wrapper">
+                <svg viewBox="0 0 52 52">
+                  <circle class="knob-track" cx="26" cy="26" r="20"></circle>
+                  <circle class="knob-progress" cx="26" cy="26" r="20"></circle>
+                </svg>
+                <div class="knob-inner-body"></div>
+              </div>
+              <span class="knob-label">Mix</span>
+              <span class="knob-val">30%</span>
+            </div>
+            <div class="knob-control" id="knob-fx-reverb-size">
+              <div class="knob-svg-wrapper">
+                <svg viewBox="0 0 52 52">
+                  <circle class="knob-track" cx="26" cy="26" r="20"></circle>
+                  <circle class="knob-progress" cx="26" cy="26" r="20"></circle>
+                </svg>
+                <div class="knob-inner-body"></div>
+              </div>
+              <span class="knob-label">Space</span>
+              <span class="knob-val">2.5s</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+  </div>
+
+  <!-- 1. Framework Core & Shared AudioBus -->
+  <script data-cfasync="false" src="framework/math-scales.js"></script>
+  <script data-cfasync="false" src="framework/audio-bus.js"></script>
+  <script data-cfasync="false" src="framework/ui-controls.js"></script>
+
+  <!-- 2. Sound Engines (Hyper-Drone for Seahorse Valley Pad + Bowed Violin String Engine) -->
+  <script data-cfasync="false" src="engines/hyper-drone.js"></script>
+  <script data-cfasync="false" src="engines/bowed-violin-string.js"></script>
+
+  <!-- 3. Per-Voice Modules (ADSR Envelope & Unison/Sub/Pitch-Bend Detune) -->
+  <script data-cfasync="false" src="modules/envelope.js"></script>
+  <script data-cfasync="false" src="modules/detune.js"></script>
+
+  <!-- 4. Studio Audio Effects Pipeline -->
+  <script data-cfasync="false" src="effects/filter.js?v=2"></script>
+  <script data-cfasync="false" src="effects/wavefolder.js?v=3"></script>
+  <script data-cfasync="false" src="effects/chorus.js?v=2"></script>
+  <script data-cfasync="false" src="effects/delay.js?v=2"></script>
+  <script data-cfasync="false" src="effects/reverb.js?v=2"></script>
+  <script data-cfasync="false" src="effects/limiter.js?v=2"></script>
+  <script data-cfasync="false" src="effects/fx-engine.js?v=2"></script>
+
+  <!-- 5. Voice Manager & Dual-Hand Air Synth Application -->
+  <script data-cfasync="false" src="framework/voice-manager.js?v=4"></script>
+  <script data-cfasync="false" src="app.js?v=5"></script>
+</body>
+</html>

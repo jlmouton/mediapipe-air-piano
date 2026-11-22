@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hand Calibration &amp; Labeled Capture Studio — Dual-Hand Air Synth</title>
+  <link rel="stylesheet" href="style.css?v=3">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@400;600;700&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
+  <style>
+    .calib-top-grid {
+      display: grid;
+      grid-template-columns: 1.15fr 1fr;
+      gap: 16px;
+    }
+    @media (max-width: 900px) {
+      .calib-top-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+    .step-banner {
+      background: #0d1422;
+      border: 1px solid var(--accent-cyan);
+      border-radius: 10px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .step-title {
+      font-family: var(--font-display);
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--accent-cyan);
+    }
+    .finger-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .finger-pill {
+      background: #151d2e;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 8px 12px;
+      color: var(--text-dim);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      user-select: none;
+      transition: all 0.15s ease;
+    }
+    .finger-pill.active {
+      background: rgba(255, 0, 128, 0.22);
+      border-color: var(--accent-magenta);
+      color: #fff;
+      box-shadow: 0 0 10px rgba(255, 0, 128, 0.35);
+    }
+    .live-meters-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+    .live-meters-table th,
+    .live-meters-table td {
+      padding: 6px 8px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      text-align: left;
+    }
+    .live-meters-table th {
+      color: var(--text-dim);
+      font-weight: 600;
+    }
+    .meter-bar-bg {
+      width: 90px;
+      height: 8px;
+      background: #090d14;
+      border-radius: 4px;
+      overflow: hidden;
+      position: relative;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .meter-bar-fill {
+      height: 100%;
+      background: var(--accent-green);
+      transition: width 0.06s linear;
+    }
+    .meter-bar-fill.playing {
+      background: var(--accent-red);
+    }
+    .samples-gallery {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+      gap: 12px;
+      margin-top: 8px;
+    }
+    .sample-card {
+      background: #0b1019;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .sample-card img {
+      width: 100%;
+      height: 140px;
+      object-fit: cover;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      transform: rotateY(180deg);
+    }
+    .sample-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+    .mini-pill {
+      padding: 4px 7px;
+      font-size: 10px;
+      border-radius: 4px;
+      background: #151d2e;
+      border: 1px solid var(--border-color);
+      color: var(--text-dim);
+      cursor: pointer;
+      font-family: var(--font-mono);
+    }
+    .mini-pill.active {
+      background: var(--accent-magenta);
+      border-color: var(--accent-magenta);
+      color: #fff;
+      font-weight: 700;
+    }
+    .countdown-overlay {
+      position: absolute;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(7, 9, 14, 0.55);
+      font-family: var(--font-display);
+      font-size: 72px;
+      font-weight: 700;
+      color: var(--accent-cyan);
+      text-shadow: 0 0 24px rgba(0, 230, 255, 0.8);
+      z-index: 10;
+      pointer-events: none;
+    }
+    .results-box {
+      background: #090d14;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 12px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      line-height: 1.5;
+      color: var(--text-main);
+    }
+  </style>
+</head>
+<body>
+  <div class="studio-container">
+
+    <!-- TOP HEADER -->
+    <header class="master-hud">
+      <div class="brand-section">
+        <span class="brand-icon">🎯</span>
+        <div class="brand-title">
+          <h1>HAND CALIBRATION &amp; LABELED CAPTURE STUDIO</h1>
+          <span class="brand-badge">Capture webcam hand poses, label active notes (1:C – 5:G), auto-compute optimal thresholds &amp; export JSON</span>
+        </div>
+      </div>
+
+      <div class="hud-actions">
+        <a href="index.html" class="btn-studio" style="text-decoration: none;">⬅ Back to Air Synth Demo</a>
+        <button id="btn-apply-calibration" class="btn-studio primary">💾 Apply &amp; Save to Demo</button>
+        <button id="btn-export-json" class="btn-studio">📥 Download JSON Dataset</button>
+      </div>
+    </header>
+
+    <!-- MAIN WORKSPACE: LEFT = VIDEO + LIVE METERS, RIGHT = GUIDED / FREE-FORM LABELING & CAPTURE -->
+    <div class="calib-top-grid">
+
+      <!-- VIDEO VIEWPORT + LIVE FINGER TELEMETRY -->
+      <section class="rack-card">
+        <div class="rack-header">
+          <div class="rack-title">📹 Live Webcam &amp; Real-Time Finger Distance Telemetry</div>
+          <div class="hand-swap-box" style="padding: 4px 8px;">
+            <label class="switch" title="Switch Left and Right hand recognition">
+              <input type="checkbox" id="toggle-swap-hands">
+              <span class="slider"></span>
+            </label>
+            <label for="toggle-swap-hands" class="hand-swap-label" style="font-size: 11px;">⇄ Mirror Mode</label>
+          </div>
+        </div>
+
+        <div class="video-viewport-wrapper" style="width: 100%; min-height: 300px;">
+          <video id="webcam" autoplay playsinline></video>
+          <canvas class="output_canvas" id="output_canvas"></canvas>
+          <div id="countdown-overlay" class="countdown-overlay">3</div>
+        </div>
+
+        <div id="live-detection-summary" style="font-family: var(--font-mono); font-size: 11px; color: var(--accent-cyan);">
+          Waiting for hand detection...
+        </div>
+
+        <table class="live-meters-table">
+          <thead>
+            <tr>
+              <th>Finger (Note)</th>
+              <th>Dist / MaxTip</th>
+              <th>Dist / PalmSize</th>
+              <th>Tip-to-Knuckle / Palm</th>
+              <th>Threshold</th>
+              <th>Detected State</th>
+            </tr>
+          </thead>
+          <tbody id="telemetry-tbody">
+            <tr><td colspan="6" style="color: var(--text-dim);">Show a hand in front of the camera to see live finger ratios...</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- GUIDED + FREE-FORM CAPTURE & AUTO-OPTIMIZER -->
+      <section class="rack-card">
+        <div class="rack-header">
+          <div class="rack-title">🏷️ Step 1: Select Ground-Truth Note Label(s) &amp; Capture</div>
+          <span class="brand-badge" id="step-progress-badge">Guided Step 1 / 9</span>
+        </div>
+
+        <!-- Guided Preset Prompts -->
+        <div class="step-banner">
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <div class="step-title" id="guided-prompt-title">1. Open Hand — No Notes (Normal Distance)</div>
+            <div style="display: flex; gap: 6px;">
+              <button id="btn-prev-step" class="btn-studio" style="padding: 4px 10px;">◀ Prev</button>
+              <button id="btn-next-step" class="btn-studio" style="padding: 4px 10px;">Next ▶</button>
+            </div>
+          </div>
+          <div id="guided-prompt-desc" style="font-size: 12px; color: var(--text-dim);">
+            Hold your hand open at a comfortable playing distance with NO fingers bent, then click Capture.
+          </div>
+
+          <div style="margin-top: 4px; font-size: 11px; color: var(--text-dim); font-weight: 600;">
+            Active Finger / Note Labels for Next Capture (click to toggle any combination):
+          </div>
+          <div class="finger-pills" id="label-pills-container">
+            <div class="finger-pill" data-finger="0">1: Thumb (C)</div>
+            <div class="finger-pill" data-finger="1">2: Index (D)</div>
+            <div class="finger-pill" data-finger="2">3: Middle (E)</div>
+            <div class="finger-pill" data-finger="3">4: Ring (F)</div>
+            <div class="finger-pill" data-finger="4">5: Pinky (G)</div>
+            <button id="btn-clear-labels" class="btn-studio" style="padding: 6px 10px; font-size: 11px;">Clear (No Notes)</button>
+          </div>
+
+          <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px;">
+            <button id="btn-capture-now" class="btn-studio primary" style="flex: 1; padding: 12px; font-size: 14px;">
+              📸 Capture Frame Now (Spacebar)
+            </button>
+            <button id="btn-capture-countdown" class="btn-studio" style="padding: 12px; font-size: 13px;">
+              ⏱️ 2s Timer Capture
+            </button>
+          </div>
+        </div>
+
+        <!-- Auto-Computed Calibration Results -->
+        <div class="rack-header" style="margin-top: 6px;">
+          <div class="rack-title">🧮 Step 2: Auto-Computed Optimal Thresholds</div>
+          <span class="brand-badge" id="accuracy-badge" style="color: var(--accent-green);">0 samples captured</span>
+        </div>
+
+        <div class="results-box" id="calibration-results-box">
+          Capture at least 1 "Open Hand (No Notes)" frame and 1+ bent-finger frames to auto-compute optimal per-finger thresholds for your hands.
+        </div>
+
+        <div id="save-status-msg" style="font-family: var(--font-mono); font-size: 11px; color: var(--accent-green); min-height: 16px;"></div>
+      </section>
+    </div>
+
+    <!-- CAPTURED IMAGES & LABELS GALLERY -->
+    <section class="rack-card">
+      <div class="rack-header">
+        <div class="rack-title">🖼️ Captured Images &amp; Ground-Truth Labels (<span id="sample-count-lbl">0</span>) — Click pills on any image to relabel</div>
+        <button id="btn-clear-all-samples" class="btn-studio" style="padding: 5px 10px; font-size: 11px;">🗑️ Clear All Captures</button>
+      </div>
+
+      <div id="samples-gallery" class="samples-gallery"></div>
+    </section>
+
+  </div>
+
+  <script data-cfasync="false" src="calibrate.js?v=1"></script>
+</body>
+</html>
