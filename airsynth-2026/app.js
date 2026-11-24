@@ -40,10 +40,32 @@ const FINGER_PLAY_RATIO_THRESHOLDS = [0.60, 0.75, 0.75, 0.75, 0.75];
 const FINGER_PLAY_THRESHOLDS = FINGER_PLAY_RATIO_THRESHOLDS;
 
 // Active hand calibration profile (can be customized via calibrate.html or applyHandCalibration)
+// Supports both shared fallback thresholds and optional independent Left/Right per-hand profiles.
 let handCalibration = {
   metricMode: 'ratioToMaxTip',
-  thresholds: [...FINGER_PLAY_RATIO_THRESHOLDS]
+  thresholds: [...FINGER_PLAY_RATIO_THRESHOLDS],
+  perHand: {
+    Left: null,
+    Right: null
+  }
 };
+
+// Hysteresis & borderline debounce settings:
+// - Release hysteresis prevents 1-frame upward landmark jitter from dropping a held note.
+// - Left-hand borderline steal debounce prevents slight sympathetic droop on an adjacent finger
+//   (e.g. Ring/G2 while holding Pinky/F2) from immediately stealing the monophonic voice on 1-2 noisy frames.
+const FINGER_RELEASE_HYSTERESIS_BY_MODE = {
+  ratioToMaxTip: 0.04,
+  ratioToPalm: 0.08,
+  tipToMcpOverPalm: 0.05
+};
+const LEFT_STEAL_DECISIVE_MARGIN_BY_MODE = {
+  ratioToMaxTip: 0.04,
+  ratioToPalm: 0.08,
+  tipToMcpOverPalm: 0.05
+};
+const LEFT_BORDERLINE_DEBOUNCE_FRAMES = 3;
+const HAND_TRACKING_MEMORY_MS = 500;
 
 // Pitch bend scaling: horizontal movement of 0.5 (half of the camera viewport) = 1 tone (2 semitones = 200 cents)
 const VIEWPORT_HALF_WIDTH = 0.5;
@@ -160,8 +182,15 @@ let results = undefined;
 // Left hand monophonic tracking state + vertical palm wavefolder modulation state
 let leftActiveFinger = null; // 0..4 or null
 let leftPrevPlays = [false, false, false, false, false];
+let leftPendingStealCounts = [0, 0, 0, 0, 0];
 let leftNoteOnPalmY = null;
 let leftNoteOnWavefolderPct = 0;
+
+// Spatial hand-tracking memory used to keep Left/Right identity stable across MediaPipe handedness glitches
+let lastHandTracking = {
+  Left: null,
+  Right: null
+};
 
 // Left hand YouTube play/pause gesture state ('idle' | 'armed_open' | 'triggered_together')
 let leftGestureState = 'idle';
@@ -340,8 +369,37 @@ function areFingertipsVisible(landmarks) {
   return true;
 }
 
+function normalizeHandCalibrationProfile(profile, fallbackMode = 'ratioToMaxTip', fallbackThresholds = FINGER_PLAY_RATIO_THRESHOLDS) {
+  if (!profile || typeof profile !== 'object') return null;
+  const validModes = ['ratioToMaxTip', 'ratioToPalm', 'tipToMcpOverPalm'];
+  const mode = validModes.includes(profile.metricMode) ? profile.metricMode : fallbackMode;
+  const thresholds = (Array.isArray(profile.thresholds) && profile.thresholds.length === 5)
+    ? profile.thresholds.map((t, i) => Number.isFinite(Number(t)) ? Number(t) : fallbackThresholds[i])
+    : [...fallbackThresholds];
+  return { metricMode: mode, thresholds };
+}
+
 /**
- * Applies a custom hand calibration profile (`metricMode` + 5 per-finger `thresholds`).
+ * Returns the active calibration profile (`{ metricMode, thresholds }`) for a given hand ('Left' | 'Right'),
+ * preferring a hand-specific calibration profile when available and falling back to the shared profile.
+ */
+function getActiveCalibrationForHand(hand = null) {
+  if (hand && handCalibration && handCalibration.perHand && handCalibration.perHand[hand]) {
+    const specific = handCalibration.perHand[hand];
+    if (Array.isArray(specific.thresholds) && specific.thresholds.length === 5) {
+      return specific;
+    }
+  }
+  const thresholds = (handCalibration && Array.isArray(handCalibration.thresholds) && handCalibration.thresholds.length === 5)
+    ? handCalibration.thresholds
+    : FINGER_PLAY_RATIO_THRESHOLDS;
+  const metricMode = (handCalibration && handCalibration.metricMode) || 'ratioToMaxTip';
+  return { metricMode, thresholds };
+}
+
+/**
+ * Applies a custom hand calibration profile (`metricMode` + 5 per-finger `thresholds`,
+ * plus optional independent `perHand: { Left, Right }` profiles).
  * Supported `metricMode` values:
  * - `'ratioToMaxTip'`: `dist(tip, wrist[0]) / max(dist(tip_0..4, wrist[0]))`
  * - `'ratioToPalm'`: `dist(tip, wrist[0]) / dist(wrist[0], middleMcp[9])`
@@ -350,15 +408,21 @@ function areFingertipsVisible(landmarks) {
  */
 function applyHandCalibration(calib) {
   if (!calib || typeof calib !== 'object') return handCalibration;
-  const validModes = ['ratioToMaxTip', 'ratioToPalm', 'tipToMcpOverPalm'];
-  const mode = validModes.includes(calib.metricMode) ? calib.metricMode : 'ratioToMaxTip';
-  const thresholds = (Array.isArray(calib.thresholds) && calib.thresholds.length === 5)
-    ? calib.thresholds.map((t, i) => Number.isFinite(Number(t)) ? Number(t) : FINGER_PLAY_RATIO_THRESHOLDS[i])
-    : [...FINGER_PLAY_RATIO_THRESHOLDS];
+  const base = normalizeHandCalibrationProfile(calib, 'ratioToMaxTip', FINGER_PLAY_RATIO_THRESHOLDS);
+  const perHand = { Left: null, Right: null };
 
-  handCalibration = { metricMode: mode, thresholds };
+  if (calib.perHand && typeof calib.perHand === 'object') {
+    if (calib.perHand.Left) {
+      perHand.Left = normalizeHandCalibrationProfile(calib.perHand.Left, base.metricMode, base.thresholds);
+    }
+    if (calib.perHand.Right) {
+      perHand.Right = normalizeHandCalibrationProfile(calib.perHand.Right, base.metricMode, base.thresholds);
+    }
+  }
+
+  handCalibration = { metricMode: base.metricMode, thresholds: base.thresholds, perHand };
   for (let i = 0; i < 5; i++) {
-    FINGER_PLAY_RATIO_THRESHOLDS[i] = thresholds[i];
+    FINGER_PLAY_RATIO_THRESHOLDS[i] = base.thresholds[i];
   }
   if (typeof window !== 'undefined') {
     window.handCalibration = handCalibration;
@@ -366,7 +430,15 @@ function applyHandCalibration(calib) {
   if (typeof document !== 'undefined') {
     const lblCalib = document.getElementById('lbl-calib-status');
     if (lblCalib) {
-      lblCalib.innerText = `Custom (${mode}: ${thresholds.map(t => Number(t).toFixed(2)).join('/')})`;
+      if (perHand.Left && perHand.Right) {
+        lblCalib.innerText = `Custom (L+R | L:${perHand.Left.metricMode}, R:${perHand.Right.metricMode})`;
+      } else if (perHand.Left) {
+        lblCalib.innerText = `Custom (L:${perHand.Left.metricMode}: ${perHand.Left.thresholds.map(t => Number(t).toFixed(2)).join('/')})`;
+      } else if (perHand.Right) {
+        lblCalib.innerText = `Custom (R:${perHand.Right.metricMode}: ${perHand.Right.thresholds.map(t => Number(t).toFixed(2)).join('/')})`;
+      } else {
+        lblCalib.innerText = `Custom (${base.metricMode}: ${base.thresholds.map(t => Number(t).toFixed(2)).join('/')})`;
+      }
     }
   }
   return handCalibration;
@@ -391,31 +463,23 @@ function loadSavedHandCalibration() {
 }
 
 /**
- * Evaluates which of the 5 fingers are in "play" position relative to the hand's scale
- * using the active scale-invariant metric (`ratioToMaxTip`, `ratioToPalm`, or `tipToMcpOverPalm`)
- * and per-finger thresholds (`handCalibration.thresholds`).
- *
- * Works identically whether 1 hand or 2 hands are detected and regardless of how close or far
- * the hand is from the camera.
+ * Computes the 5 continuous scale-invariant finger metric values for `landmarks`
+ * under the requested `mode` ('ratioToMaxTip' | 'ratioToPalm' | 'tipToMcpOverPalm').
+ * Returns `null` if the hand landmarks collapse to zero size.
  */
-function getFingerPlayStates(landmarks) {
+function getFingerMetricValues(landmarks, mode = 'ratioToMaxTip') {
   const palm = landmarks[PALM_CENTER_INDEX];
   const tipToWrist = FINGER_TIP_INDICES.map(idx => distance(landmarks[idx], palm));
   const maxTipDist = Math.max(...tipToWrist);
 
   if (!Number.isFinite(maxTipDist) || maxTipDist <= 1e-6) {
-    return [false, false, false, false, false];
+    return null;
   }
-
-  const thresholds = (handCalibration && Array.isArray(handCalibration.thresholds) && handCalibration.thresholds.length === 5)
-    ? handCalibration.thresholds
-    : FINGER_PLAY_RATIO_THRESHOLDS;
-  const mode = (handCalibration && handCalibration.metricMode) || 'ratioToMaxTip';
 
   if (mode === 'ratioToPalm') {
     const middleMcp = landmarks[MIDDLE_MCP_INDEX] || palm;
     const palmScale = Math.max(distance(palm, middleMcp), 1e-6);
-    return tipToWrist.map((dist, i) => (dist / palmScale) < thresholds[i]);
+    return tipToWrist.map(dist => dist / palmScale);
   }
 
   if (mode === 'tipToMcpOverPalm') {
@@ -426,14 +490,41 @@ function getFingerPlayStates(landmarks) {
     const palmWidth = Math.max(distance(indexMcp, pinkyMcp), 1e-6);
     return FINGER_TIP_INDICES.map((tipIdx, i) => {
       if (i === 0) {
-        return (distance(landmarks[tipIdx], pinkyMcp) / palmWidth) < thresholds[0];
+        return distance(landmarks[tipIdx], pinkyMcp) / palmWidth;
       }
       const mcp = landmarks[FINGER_MCP_INDICES[i]] || palm;
-      return (distance(landmarks[tipIdx], mcp) / palmScale) < thresholds[i];
+      return distance(landmarks[tipIdx], mcp) / palmScale;
     });
   }
 
-  return tipToWrist.map((dist, i) => (dist / maxTipDist) < thresholds[i]);
+  return tipToWrist.map(dist => dist / maxTipDist);
+}
+
+/**
+ * Evaluates which of the 5 fingers are in "play" position relative to the hand's scale
+ * using the active scale-invariant metric (`ratioToMaxTip`, `ratioToPalm`, or `tipToMcpOverPalm`)
+ * and per-finger thresholds (with optional per-hand profile and release hysteresis).
+ *
+ * Works identically whether 1 hand or 2 hands are detected and regardless of how close or far
+ * the hand is from the camera.
+ */
+function getFingerPlayStates(landmarks, hand = null, prevStates = null) {
+  const { metricMode: mode, thresholds } = getActiveCalibrationForHand(hand);
+  const values = getFingerMetricValues(landmarks, mode);
+  if (!values) {
+    return [false, false, false, false, false];
+  }
+
+  const releaseHyst = (Array.isArray(prevStates) && prevStates.length === 5)
+    ? (FINGER_RELEASE_HYSTERESIS_BY_MODE[mode] || 0.04)
+    : 0;
+
+  return values.map((val, i) => {
+    const effectiveThreshold = (releaseHyst > 0 && prevStates[i])
+      ? thresholds[i] + releaseHyst
+      : thresholds[i];
+    return val < effectiveThreshold;
+  });
 }
 
 /**
@@ -484,40 +575,49 @@ function setLeftWavefolderPercent(percent) {
 }
 
 /**
- * Extracts normalized handedness ('Left' or 'Right') for hand `index` from MediaPipe results.
+ * Extracts normalized handedness ('Left' or 'Right') and confidence score for hand `index`
+ * from MediaPipe results.
  * Because MediaPipe's HandLandmarker assumes a mirrored selfie image by default,
  * its raw 'Left' and 'Right' labels are inverted relative to a standard webcam feed.
  * Therefore, by default (`swapHands === false`), raw 'Left' is mapped to 'Right'
  * and raw 'Right' is mapped to 'Left'. Toggling `#toggle-swap-hands` (`swapHands === true`)
  * switches them back for users whose video camera is already mirrored.
  */
-function getHandCategory(detectionResults, index) {
+function getHandDetectionInfo(detectionResults, index) {
   const list = (detectionResults && (detectionResults.handednesses || detectionResults.handedness)) || [];
   const entry = list[index];
   let raw = '';
+  let score = 1.0;
   if (Array.isArray(entry) && entry[0]) {
     raw = entry[0].categoryName || entry[0].displayName || entry[0].label || '';
+    if (Number.isFinite(entry[0].score)) score = entry[0].score;
   } else if (entry && typeof entry === 'object') {
     raw = entry.categoryName || entry.displayName || entry.label || '';
+    if (Number.isFinite(entry.score)) score = entry.score;
   } else if (typeof entry === 'string') {
     raw = entry;
   }
 
   const lower = String(raw).trim().toLowerCase();
   let rawHand;
+  let hasLabel = true;
   if (lower.startsWith('l')) {
     rawHand = 'Left';
   } else if (lower.startsWith('r')) {
     rawHand = 'Right';
   } else {
+    hasLabel = false;
+    score = 0.5;
     rawHand = index === 0 ? 'Right' : 'Left';
   }
 
   // Switched by default (`swapHands === false`): raw 'Left' -> 'Right', raw 'Right' -> 'Left'
-  if (!swapHands) {
-    return rawHand === 'Left' ? 'Right' : 'Left';
-  }
-  return rawHand;
+  const category = !swapHands ? (rawHand === 'Left' ? 'Right' : 'Left') : rawHand;
+  return { category, score, hasLabel };
+}
+
+function getHandCategory(detectionResults, index) {
+  return getHandDetectionInfo(detectionResults, index).category;
 }
 
 /**
@@ -974,6 +1074,7 @@ function stopLeftHandSynthNotes() {
   leftActiveFinger = null;
   leftNoteOnPalmY = null;
   leftPrevPlays = [false, false, false, false, false];
+  leftPendingStealCounts = [0, 0, 0, 0, 0];
   updateStatusLabels();
 }
 
@@ -1012,6 +1113,7 @@ function releaseRightHandNotes() {
 function panicAllNotesOff() {
   releaseLeftHandNotes();
   releaseRightHandNotes();
+  lastHandTracking = { Left: null, Right: null };
 }
 
 /**
@@ -1024,13 +1126,21 @@ function panicAllNotesOff() {
  *   and does not reset to 0% between notes).
  * - Open Hand -> All 5 Fingers Together gesture toggles YouTube video Play / Pause.
  */
-function processLeftHand(landmarks, canvasCtx) {
+function processLeftHand(landmarks, canvasCtx, isNewVideoFrame = true) {
   if (!areFingertipsVisible(landmarks)) {
     releaseLeftHandNotes();
     return;
   }
 
-  const plays = getFingerPlayStates(landmarks);
+  const activeCalib = getActiveCalibrationForHand('Left');
+  const metricValues = getFingerMetricValues(landmarks, activeCalib.metricMode);
+  // Apply release hysteresis only to the currently playing monophonic finger so held notes
+  // resist upward jitter without making inactive fingers artificially sticky.
+  const leftHystStates = [false, false, false, false, false];
+  if (leftActiveFinger !== null) {
+    leftHystStates[leftActiveFinger] = true;
+  }
+  const plays = getFingerPlayStates(landmarks, 'Left', leftHystStates);
   updateLeftHandYouTubeGesture(landmarks, plays);
 
   // When all 5 fingertips are brought close together, suppress synth notes so the gesture cleanly controls video
@@ -1047,32 +1157,89 @@ function processLeftHand(landmarks, canvasCtx) {
   }
 
   const currentPalmY = landmarks[PALM_CENTER_INDEX].y;
+  const decisiveMargin = LEFT_STEAL_DECISIVE_MARGIN_BY_MODE[activeCalib.metricMode] || 0.04;
 
-  // Monophonic voice selection:
-  // If a finger newly transitioned from inactive -> active, select it;
-  // otherwise keep the currently active finger if still held, or fall back to the first active finger.
-  let nextFinger = leftActiveFinger;
-  let newlyPressed = null;
-  for (let i = 0; i < 5; i++) {
-    if (plays[i] && !leftPrevPlays[i]) {
-      newlyPressed = i;
-      break;
-    }
-  }
+  // Normalized curl depth below threshold so that when multiple fingers read active
+  // (e.g., deeply curled Pinky F2 with sympathetically drooping Ring G2), the most deeply
+  // curled finger wins instead of blindly favoring lower finger indices.
+  const getCurlDepth = (idx) => {
+    if (!metricValues) return 0;
+    const thresh = activeCalib.thresholds[idx] || 1e-6;
+    return (thresh - metricValues[idx]) / Math.max(thresh, 1e-6);
+  };
 
-  if (newlyPressed !== null) {
-    nextFinger = newlyPressed;
-  } else if (nextFinger === null || !plays[nextFinger]) {
-    nextFinger = null;
-    for (let i = 0; i < 5; i++) {
-      if (plays[i]) {
-        nextFinger = i;
-        break;
+  const pickDeepestFinger = (candidates) => {
+    if (!candidates || candidates.length === 0) return null;
+    let best = candidates[0];
+    let bestDepth = getCurlDepth(best);
+    for (let k = 1; k < candidates.length; k++) {
+      const idx = candidates[k];
+      const depth = getCurlDepth(idx);
+      if (depth > bestDepth + 1e-9) {
+        best = idx;
+        bestDepth = depth;
       }
     }
+    return best;
+  };
+
+  // Monophonic voice selection with borderline steal debounce:
+  // - If a finger newly transitions from inactive -> active while another finger is held,
+  //   a decisive curl triggers immediately, whereas a borderline dip right near the threshold
+  //   (such as sympathetic Ring/G2 droop while holding Pinky/F2) must persist for
+  //   LEFT_BORDERLINE_DEBOUNCE_FRAMES consecutive new video frames before stealing the voice.
+  // - If no finger is currently held (or the active finger was released), select the most deeply
+  //   curled active finger immediately.
+  const isHoldingActiveFinger = leftActiveFinger !== null && plays[leftActiveFinger];
+  let nextFinger = leftActiveFinger;
+  const newlyPressedCandidates = [];
+  const nextPrevPlays = [...plays];
+
+  if (isHoldingActiveFinger) {
+    leftPendingStealCounts[leftActiveFinger] = 0;
+    for (let i = 0; i < 5; i++) {
+      if (i === leftActiveFinger) continue;
+      if (plays[i] && !leftPrevPlays[i]) {
+        const marginBelow = metricValues ? (activeCalib.thresholds[i] - metricValues[i]) : decisiveMargin;
+        if (marginBelow >= decisiveMargin) {
+          leftPendingStealCounts[i] = 0;
+          newlyPressedCandidates.push(i);
+        } else {
+          if (isNewVideoFrame) {
+            leftPendingStealCounts[i] = Math.min(LEFT_BORDERLINE_DEBOUNCE_FRAMES, leftPendingStealCounts[i] + 1);
+          }
+          if (leftPendingStealCounts[i] >= LEFT_BORDERLINE_DEBOUNCE_FRAMES) {
+            leftPendingStealCounts[i] = 0;
+            newlyPressedCandidates.push(i);
+          } else {
+            // Keep prev state false while pending debounce so subsequent frames continue confirming
+            nextPrevPlays[i] = false;
+          }
+        }
+      } else {
+        leftPendingStealCounts[i] = 0;
+      }
+    }
+
+    if (newlyPressedCandidates.length > 0) {
+      nextFinger = pickDeepestFinger(newlyPressedCandidates);
+    }
+  } else {
+    leftPendingStealCounts = [0, 0, 0, 0, 0];
+    const activeCandidates = [];
+    for (let i = 0; i < 5; i++) {
+      if (plays[i]) activeCandidates.push(i);
+    }
+    nextFinger = pickDeepestFinger(activeCandidates);
   }
 
-  leftPrevPlays = [...plays];
+  if (nextFinger !== leftActiveFinger) {
+    leftPendingStealCounts = [0, 0, 0, 0, 0];
+    if (nextFinger !== null) {
+      nextPrevPlays[nextFinger] = true;
+    }
+  }
+  leftPrevPlays = nextPrevPlays;
 
   if (nextFinger !== leftActiveFinger) {
     if (leftActiveFinger !== null && leftVoiceManager) {
@@ -1123,7 +1290,7 @@ function processRightHand(landmarks, canvasCtx) {
     return;
   }
 
-  const plays = getFingerPlayStates(landmarks);
+  const plays = getFingerPlayStates(landmarks, 'Right', rightActiveFingers);
   const currentPalmX = landmarks[PALM_CENTER_INDEX].x;
 
   // Draw the 5 fingertip locations & palm center location on the overlay canvas
@@ -1178,41 +1345,151 @@ function processRightHand(landmarks, canvasCtx) {
 }
 
 /**
- * Processes a full MediaPipe HandLandmarker detection result for up to 2 hands.
- * Any hand whose fingertips are no longer detected or visible has all its notes turned off.
+ * Assigns up to 2 detected hands to Left and Right slots safely without swapping them when
+ * MediaPipe outputs duplicate or flipped handedness labels on noisy frames.
+ * Resolution order:
+ * 1. Clean distinct handedness labels (with simultaneous 1-frame flip guard via wrist continuity)
+ * 2. On duplicate labels: nearest-neighbor spatial continuity to recent Left/Right wrist positions,
+ *    then MediaPipe handedness confidence score, then camera-orientation horizontal (x) order.
+ * 3. On a single visible hand: guard against 1-frame misclassification if the wrist sits directly
+ *    on the recently tracked opposite hand's position.
  */
-function processHandDetectionResults(detectionResults, canvasCtx) {
-  let seenLeft = false;
-  let seenRight = false;
-
+function assignDetectedHands(detectionResults, nowMs = (typeof performance !== 'undefined' ? performance.now() : Date.now())) {
+  const visibleHands = [];
   if (detectionResults && Array.isArray(detectionResults.landmarks) && detectionResults.landmarks.length > 0) {
     const count = Math.min(2, detectionResults.landmarks.length);
     for (let i = 0; i < count; i++) {
       const landmarks = detectionResults.landmarks[i];
       if (!areFingertipsVisible(landmarks)) continue;
-
-      const category = getHandCategory(detectionResults, i);
-      if (category === 'Left' && !seenLeft) {
-        seenLeft = true;
-        processLeftHand(landmarks, canvasCtx);
-      } else if (category === 'Right' && !seenRight) {
-        seenRight = true;
-        processRightHand(landmarks, canvasCtx);
-      } else if (!seenRight) {
-        seenRight = true;
-        processRightHand(landmarks, canvasCtx);
-      } else if (!seenLeft) {
-        seenLeft = true;
-        processLeftHand(landmarks, canvasCtx);
-      }
+      const info = getHandDetectionInfo(detectionResults, i);
+      visibleHands.push({
+        index: i,
+        landmarks,
+        wrist: landmarks[PALM_CENTER_INDEX],
+        category: info.category,
+        score: info.score,
+        hasLabel: info.hasLabel
+      });
     }
   }
 
-  // When fingertips/hand are no longer seen in the camera feed, turn all notes off for that hand
-  if (!seenLeft) {
+  const getRecentTrack = (side) => {
+    const entry = lastHandTracking[side];
+    if (!entry) return null;
+    if (nowMs - entry.timeMs > HAND_TRACKING_MEMORY_MS) return null;
+    return entry;
+  };
+
+  const prevLeft = getRecentTrack('Left');
+  const prevRight = getRecentTrack('Right');
+
+  let assignedLeft = null;
+  let assignedRight = null;
+
+  if (visibleHands.length === 2) {
+    const [h0, h1] = visibleHands;
+    if (h0.category !== h1.category) {
+      assignedLeft = h0.category === 'Left' ? h0 : h1;
+      assignedRight = h0.category === 'Right' ? h0 : h1;
+
+      // Guard against an unmistakable simultaneous Left<->Right handedness flip while both wrists stayed put
+      if (
+        prevLeft && prevRight &&
+        distance(prevLeft, prevRight) > 0.18 &&
+        distance(assignedRight.wrist, prevLeft) < 0.12 &&
+        distance(assignedLeft.wrist, prevRight) < 0.12
+      ) {
+        const tmp = assignedLeft;
+        assignedLeft = assignedRight;
+        assignedRight = tmp;
+      }
+    } else {
+      // Duplicate handedness from MediaPipe (both 'Left' or both 'Right'):
+      // Resolve via spatial continuity first, then confidence score, then viewport horizontal order.
+      let h0IsLeft;
+      if (prevLeft && prevRight) {
+        const cost01 = distance(h0.wrist, prevLeft) + distance(h1.wrist, prevRight);
+        const cost10 = distance(h1.wrist, prevLeft) + distance(h0.wrist, prevRight);
+        h0IsLeft = cost01 <= cost10;
+      } else if (prevLeft) {
+        h0IsLeft = distance(h0.wrist, prevLeft) <= distance(h1.wrist, prevLeft);
+      } else if (prevRight) {
+        h0IsLeft = distance(h1.wrist, prevRight) < distance(h0.wrist, prevRight);
+      } else if (Math.abs(h0.score - h1.score) > 0.05) {
+        h0IsLeft = h0.category === 'Left' ? (h0.score >= h1.score) : (h0.score < h1.score);
+      } else {
+        // In standard unmirrored webcam coordinates (swapHands === false), user's Left hand has larger raw x;
+        // in hardware-mirrored cameras (swapHands === true), user's Left hand has smaller raw x.
+        h0IsLeft = swapHands ? (h0.wrist.x <= h1.wrist.x) : (h0.wrist.x >= h1.wrist.x);
+      }
+
+      if (h0IsLeft) {
+        assignedLeft = h0;
+        assignedRight = h1;
+      } else {
+        assignedLeft = h1;
+        assignedRight = h0;
+      }
+    }
+  } else if (visibleHands.length === 1) {
+    const h0 = visibleHands[0];
+    let resolvedCategory = h0.category;
+
+    // Guard against a single visible hand getting misclassified when its wrist sits squarely
+    // on the recently tracked opposite hand's position (and far from the claimed hand's position).
+    if (
+      resolvedCategory === 'Left' &&
+      prevRight &&
+      distance(h0.wrist, prevRight) < 0.12 &&
+      (!prevLeft || distance(h0.wrist, prevLeft) > 0.20)
+    ) {
+      resolvedCategory = 'Right';
+    } else if (
+      resolvedCategory === 'Right' &&
+      prevLeft &&
+      distance(h0.wrist, prevLeft) < 0.12 &&
+      (!prevRight || distance(h0.wrist, prevRight) > 0.20)
+    ) {
+      resolvedCategory = 'Left';
+    }
+
+    if (resolvedCategory === 'Left') {
+      assignedLeft = h0;
+    } else {
+      assignedRight = h0;
+    }
+  }
+
+  if (assignedLeft) {
+    lastHandTracking.Left = { x: assignedLeft.wrist.x, y: assignedLeft.wrist.y, timeMs: nowMs };
+  }
+  if (assignedRight) {
+    lastHandTracking.Right = { x: assignedRight.wrist.x, y: assignedRight.wrist.y, timeMs: nowMs };
+  }
+
+  return {
+    leftLandmarks: assignedLeft ? assignedLeft.landmarks : null,
+    rightLandmarks: assignedRight ? assignedRight.landmarks : null
+  };
+}
+
+/**
+ * Processes a full MediaPipe HandLandmarker detection result for up to 2 hands.
+ * Any hand whose fingertips are no longer detected or visible has all its notes turned off.
+ */
+function processHandDetectionResults(detectionResults, canvasCtx, isNewVideoFrame = true) {
+  const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  const { leftLandmarks, rightLandmarks } = assignDetectedHands(detectionResults, nowMs);
+
+  if (leftLandmarks) {
+    processLeftHand(leftLandmarks, canvasCtx, isNewVideoFrame);
+  } else {
     releaseLeftHandNotes();
   }
-  if (!seenRight) {
+
+  if (rightLandmarks) {
+    processRightHand(rightLandmarks, canvasCtx);
+  } else {
     releaseRightHandNotes();
   }
 }
@@ -1244,7 +1521,10 @@ async function createHandLandmarker() {
       delegate: 'GPU'
     },
     runningMode: 'VIDEO',
-    numHands: 2
+    numHands: 2,
+    minHandDetectionConfidence: 0.85,
+    minHandPresenceConfidence: 0.80,
+    minTrackingConfidence: 0.75
   });
 
   if (typeof window !== 'undefined') {
@@ -1283,7 +1563,13 @@ async function enableCam() {
   });
 
   if (typeof handLandmarker.setOptions === 'function') {
-    await handLandmarker.setOptions({ runningMode: 'VIDEO', numHands: 2 });
+    await handLandmarker.setOptions({
+      runningMode: 'VIDEO',
+      numHands: 2,
+      minHandDetectionConfidence: 0.85,
+      minHandPresenceConfidence: 0.80,
+      minTrackingConfidence: 0.75
+    });
   }
 }
 
@@ -1301,18 +1587,20 @@ async function predictWebcam() {
   }
 
   const startTimeMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  let isNewVideoFrame = false;
   if (handLandmarker && lastVideoTime !== video.currentTime) {
     lastVideoTime = video.currentTime;
     results = handLandmarker.detectForVideo(video, startTimeMs);
+    isNewVideoFrame = true;
   }
 
   if (canvasCtx) {
     canvasCtx.save();
     canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-    processHandDetectionResults(results, canvasCtx);
+    processHandDetectionResults(results, canvasCtx, isNewVideoFrame);
     canvasCtx.restore();
   } else {
-    processHandDetectionResults(results, null);
+    processHandDetectionResults(results, null, isNewVideoFrame);
   }
 
   // Advance Hyper-Drone 60 FPS swirl wavetable when Left Hand is playing a note

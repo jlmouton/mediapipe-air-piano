@@ -163,6 +163,74 @@
       line-height: 1.5;
       color: var(--text-main);
     }
+    .hand-selector-tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .hand-tab-btn {
+      background: #121a2b;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 10px 12px;
+      color: var(--text-dim);
+      font-family: var(--font-main);
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      transition: all 0.15s ease;
+    }
+    .hand-tab-btn:hover {
+      border-color: var(--accent-cyan);
+      color: var(--text-main);
+    }
+    .hand-tab-btn.active-left {
+      background: rgba(0, 230, 255, 0.14);
+      border-color: var(--accent-cyan);
+      color: #fff;
+      box-shadow: 0 0 12px rgba(0, 230, 255, 0.25);
+    }
+    .hand-tab-btn.active-right {
+      background: rgba(255, 0, 128, 0.14);
+      border-color: var(--accent-magenta);
+      color: #fff;
+      box-shadow: 0 0 12px rgba(255, 0, 128, 0.25);
+    }
+    .hand-tab-count {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.35);
+      color: var(--text-dim);
+    }
+    .per-hand-results-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 8px;
+    }
+    @media (max-width: 720px) {
+      .per-hand-results-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+    .hand-result-card {
+      background: #0d1422;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 8px 10px;
+    }
+    .gallery-filter-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
   </style>
 </head>
 <body>
@@ -174,7 +242,7 @@
         <span class="brand-icon">🎯</span>
         <div class="brand-title">
           <h1>HAND CALIBRATION &amp; LABELED CAPTURE STUDIO</h1>
-          <span class="brand-badge">Capture webcam hand poses, label active notes (1:C – 5:G), auto-compute optimal thresholds &amp; export JSON</span>
+          <span class="brand-badge">Calibrate Left Hand (C3–F2) &amp; Right Hand (C4–G4) independently, auto-compute max-margin thresholds &amp; export JSON</span>
         </div>
       </div>
 
@@ -231,38 +299,50 @@
       <!-- GUIDED + FREE-FORM CAPTURE & AUTO-OPTIMIZER -->
       <section class="rack-card">
         <div class="rack-header">
-          <div class="rack-title">🏷️ Step 1: Select Ground-Truth Note Label(s) &amp; Capture</div>
-          <span class="brand-badge" id="step-progress-badge">Guided Step 1 / 9</span>
+          <div class="rack-title">🏷️ Step 1: Choose Hand, Select Label(s) &amp; Capture</div>
+          <span class="brand-badge" id="step-progress-badge">Left Hand • Step 1 / 7</span>
+        </div>
+
+        <!-- Target Hand Selector (Left vs Right Independent Calibration) -->
+        <div class="hand-selector-tabs" id="hand-selector-tabs">
+          <button type="button" id="btn-select-left-hand" class="hand-tab-btn active-left" data-hand="Left">
+            <span>🤚 Left Hand (C3–F2)</span>
+            <span class="hand-tab-count" id="left-sample-count-badge">0 samples</span>
+          </button>
+          <button type="button" id="btn-select-right-hand" class="hand-tab-btn" data-hand="Right">
+            <span>✋ Right Hand (C4–G4)</span>
+            <span class="hand-tab-count" id="right-sample-count-badge">0 samples</span>
+          </button>
         </div>
 
         <!-- Guided Preset Prompts -->
         <div class="step-banner">
           <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
-            <div class="step-title" id="guided-prompt-title">1. Open Hand — No Notes (Normal Distance)</div>
+            <div class="step-title" id="guided-prompt-title">Left 1. Open Hand — No Notes (Normal Distance)</div>
             <div style="display: flex; gap: 6px;">
               <button id="btn-prev-step" class="btn-studio" style="padding: 4px 10px;">◀ Prev</button>
               <button id="btn-next-step" class="btn-studio" style="padding: 4px 10px;">Next ▶</button>
             </div>
           </div>
           <div id="guided-prompt-desc" style="font-size: 12px; color: var(--text-dim);">
-            Hold your hand open at a comfortable playing distance with NO fingers bent, then click Capture.
+            Hold your Left Hand open at a comfortable playing distance with NO fingers bent, then click Capture.
           </div>
 
           <div style="margin-top: 4px; font-size: 11px; color: var(--text-dim); font-weight: 600;">
-            Active Finger / Note Labels for Next Capture (click to toggle any combination):
+            Active Finger / Note Labels for Next Capture (captures ONLY the selected hand):
           </div>
           <div class="finger-pills" id="label-pills-container">
-            <div class="finger-pill" data-finger="0">1: Thumb (C)</div>
-            <div class="finger-pill" data-finger="1">2: Index (D)</div>
-            <div class="finger-pill" data-finger="2">3: Middle (E)</div>
-            <div class="finger-pill" data-finger="3">4: Ring (F)</div>
-            <div class="finger-pill" data-finger="4">5: Pinky (G)</div>
+            <div class="finger-pill" data-finger="0">1: Thumb (C3)</div>
+            <div class="finger-pill" data-finger="1">2: Index (B2)</div>
+            <div class="finger-pill" data-finger="2">3: Middle (A2)</div>
+            <div class="finger-pill" data-finger="3">4: Ring (G2)</div>
+            <div class="finger-pill" data-finger="4">5: Pinky (F2)</div>
             <button id="btn-clear-labels" class="btn-studio" style="padding: 6px 10px; font-size: 11px;">Clear (No Notes)</button>
           </div>
 
           <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px;">
             <button id="btn-capture-now" class="btn-studio primary" style="flex: 1; padding: 12px; font-size: 14px;">
-              📸 Capture Frame Now (Spacebar)
+              📸 Capture Left Hand Now (Spacebar)
             </button>
             <button id="btn-capture-countdown" class="btn-studio" style="padding: 12px; font-size: 13px;">
               ⏱️ 2s Timer Capture
@@ -272,12 +352,12 @@
 
         <!-- Auto-Computed Calibration Results -->
         <div class="rack-header" style="margin-top: 6px;">
-          <div class="rack-title">🧮 Step 2: Auto-Computed Optimal Thresholds</div>
+          <div class="rack-title">🧮 Step 2: Auto-Computed Left &amp; Right Thresholds</div>
           <span class="brand-badge" id="accuracy-badge" style="color: var(--accent-green);">0 samples captured</span>
         </div>
 
         <div class="results-box" id="calibration-results-box">
-          Capture at least 1 "Open Hand (No Notes)" frame and 1+ bent-finger frames to auto-compute optimal per-finger thresholds for your hands.
+          Capture Open Hand and bent-finger frames for both Left Hand (C3–F2) and Right Hand (C4–G4) to auto-compute independent optimal thresholds.
         </div>
 
         <div id="save-status-msg" style="font-family: var(--font-mono); font-size: 11px; color: var(--accent-green); min-height: 16px;"></div>
@@ -287,8 +367,14 @@
     <!-- CAPTURED IMAGES & LABELS GALLERY -->
     <section class="rack-card">
       <div class="rack-header">
-        <div class="rack-title">🖼️ Captured Images &amp; Ground-Truth Labels (<span id="sample-count-lbl">0</span>) — Click pills on any image to relabel</div>
-        <button id="btn-clear-all-samples" class="btn-studio" style="padding: 5px 10px; font-size: 11px;">🗑️ Clear All Captures</button>
+        <div class="rack-title">🖼️ Captured Images &amp; Ground-Truth Labels (<span id="sample-count-lbl">0</span>) — Click pills to relabel</div>
+        <div class="gallery-filter-bar">
+          <button type="button" class="mini-pill active" data-gallery-filter="All">All</button>
+          <button type="button" class="mini-pill" data-gallery-filter="Left">Left Hand</button>
+          <button type="button" class="mini-pill" data-gallery-filter="Right">Right Hand</button>
+          <button id="btn-clear-hand-samples" class="btn-studio" style="padding: 5px 10px; font-size: 11px;">🧹 Clear Selected Hand</button>
+          <button id="btn-clear-all-samples" class="btn-studio" style="padding: 5px 10px; font-size: 11px;">🗑️ Clear All</button>
+        </div>
       </div>
 
       <div id="samples-gallery" class="samples-gallery"></div>
@@ -296,6 +382,6 @@
 
   </div>
 
-  <script data-cfasync="false" src="calibrate.js?v=1"></script>
+  <script data-cfasync="false" src="calibrate.js?v=4"></script>
 </body>
 </html>

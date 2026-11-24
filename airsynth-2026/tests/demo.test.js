@@ -41,10 +41,16 @@ describe('2. MediaPipe 2-Hand Recognition & Video Overlay Dots', () => {
     assert.ok(created, 'HandLandmarker.createFromOptions should be called');
     assert.equal(created.options.runningMode, 'VIDEO');
     assert.equal(created.options.numHands, 2);
+    assert.equal(created.options.minHandDetectionConfidence, 0.85);
+    assert.equal(created.options.minHandPresenceConfidence, 0.80);
+    assert.equal(created.options.minTrackingConfidence, 0.75);
 
     const setOpts = env.getSetOptionsCalls();
     assert.ok(setOpts.length >= 1);
     assert.equal(setOpts[0].numHands, 2);
+    assert.equal(setOpts[0].minHandDetectionConfidence, 0.85);
+    assert.equal(setOpts[0].minHandPresenceConfidence, 0.80);
+    assert.equal(setOpts[0].minTrackingConfidence, 0.75);
   });
 
   it('calculates scale-invariant fingertip-to-palm distance ratios (< 0.60 for thumb, < 0.75 for fingers 2-5) consistent at any camera distance', () => {
@@ -874,5 +880,264 @@ describe('8. YouTube Video Dropdown, Reload Button, Thumbnail View & Left-Hand 5
       const together = env.evaluate(`areAllFiveFingersTogether(${JSON.stringify(sample.landmarks)})`);
       assert.equal(together, false, `Sample ${sample.id} (${sample.stepTitle}) must NOT trigger all-5-fingers-together`);
     }
+  });
+});
+
+describe('9. Cross-Hand Stability, Handedness Glitch Protection, Debounce/Hysteresis & Per-Hand Calibration', () => {
+  let env;
+
+  beforeEach(() => {
+    env = createDemoTestEnv();
+    env.evaluate('initAudioEngine()');
+  });
+
+  it('prevents Right Hand melody (e.g., F4 on Ring finger) from hijacking Left Hand F2 when MediaPipe emits duplicate or swapped handedness labels', () => {
+    // Frame 1: Clean baseline — Left Hand at x=0.75 holding Pinky (F2=41), Right Hand at x=0.25 playing C4 (Thumb)
+    const leftF2 = buildHandLandmarks({ palmX: 0.75, palmY: 0.7, activeFingers: [false, false, false, false, true] });
+    const rightC4 = buildHandLandmarks({ palmX: 0.25, palmY: 0.7, activeFingers: [true, false, false, false, false] });
+
+    env.evaluate(`processHandDetectionResults({
+      landmarks: ${JSON.stringify([leftF2, rightC4])},
+      handednesses: [[{ categoryName: 'Right', score: 0.96 }], [{ categoryName: 'Left', score: 0.95 }]]
+    }, null)`);
+
+    assert.deepEqual(env.evaluate('Array.from(leftVoiceManager.activeVoices.keys())'), [41]); // F2
+    assert.deepEqual(env.evaluate('Array.from(rightVoiceManager.activeVoices.keys())'), [60]); // C4
+
+    // Frame 2: Right Hand plays F4 (Ring finger, index 3) while MediaPipe glitches and labels BOTH hands raw 'Left'
+    // (which both invert to 'Right' under default swapHands === false). Previously this swapped Left and Right,
+    // causing Left Hand to jump from F2 (41) to G2 (43)!
+    env.advanceTime(33);
+    const rightF4 = buildHandLandmarks({ palmX: 0.26, palmY: 0.7, activeFingers: [false, false, false, true, false] });
+    env.evaluate(`processHandDetectionResults({
+      landmarks: ${JSON.stringify([leftF2, rightF4])},
+      handednesses: [[{ categoryName: 'Left', score: 0.62 }], [{ categoryName: 'Left', score: 0.91 }]]
+    }, null)`);
+    env.flushTimeouts();
+
+    assert.deepEqual(env.evaluate('Array.from(leftVoiceManager.activeVoices.keys())'), [41]); // Still F2!
+    assert.equal(env.doc.getElementById('lbl-left-status').innerText, 'F2');
+    assert.deepEqual(env.evaluate('Array.from(rightVoiceManager.activeVoices.keys())'), [65]); // Right plays F4
+
+    // Frame 3: MediaPipe reorders array to [rightF4, leftF2] AND labels BOTH hands raw 'Right' (both invert to 'Left')
+    env.advanceTime(33);
+    env.evaluate(`processHandDetectionResults({
+      landmarks: ${JSON.stringify([rightF4, leftF2])},
+      handednesses: [[{ categoryName: 'Right', score: 0.60 }], [{ categoryName: 'Right', score: 0.94 }]]
+    }, null)`);
+    env.flushTimeouts();
+
+    assert.deepEqual(env.evaluate('Array.from(leftVoiceManager.activeVoices.keys())'), [41]); // Still F2!
+    assert.deepEqual(env.evaluate('Array.from(rightVoiceManager.activeVoices.keys())'), [65]); // Still F4!
+
+    // Frame 4: MediaPipe simultaneously flips BOTH handedness labels while both wrists stayed put
+    env.advanceTime(33);
+    env.evaluate(`processHandDetectionResults({
+      landmarks: ${JSON.stringify([leftF2, rightF4])},
+      handednesses: [[{ categoryName: 'Left', score: 0.70 }], [{ categoryName: 'Right', score: 0.70 }]]
+    }, null)`);
+    env.flushTimeouts();
+
+    assert.deepEqual(env.evaluate('Array.from(leftVoiceManager.activeVoices.keys())'), [41]); // Still F2!
+    assert.deepEqual(env.evaluate('Array.from(rightVoiceManager.activeVoices.keys())'), [65]); // Still F4!
+
+    // Frame 5: Left Hand momentarily disappears, and MediaPipe misclassifies the stationary Right Hand (at x=0.26) as Left
+    env.advanceTime(33);
+    env.evaluate(`processHandDetectionResults({
+      landmarks: ${JSON.stringify([rightF4])},
+      handednesses: [[{ categoryName: 'Right', score: 0.65 }]]
+    }, null)`);
+    env.flushTimeouts();
+
+    // Left Hand cleanly releases instead of playing G2 from Right Hand's F4, while Right Hand stays on F4
+    assert.equal(env.evaluate('leftVoiceManager.activeVoices.size'), 0);
+    assert.deepEqual(env.evaluate('Array.from(rightVoiceManager.activeVoices.keys())'), [65]);
+  });
+
+  it('rejects 1-2 frame borderline Ring (G2) droop while holding Pinky (F2), still allows deliberate G2, and picks the deepest curled finger on ties', () => {
+    // Apply exact calibrated thresholds from hand-calibration-data.json
+    env.evaluate(`applyHandCalibration({
+      metricMode: 'ratioToMaxTip',
+      thresholds: [0.511, 0.6973, 0.743, 0.5039, 0.5434]
+    })`);
+
+    // Helper to build a hand with explicit fingertip ratios relative to maxTipDist = 0.50
+    const buildRatiosHand = (ratios) => {
+      const lm = buildHandLandmarks({ palmX: 0.7, palmY: 0.8, activeFingers: [false, false, false, false, false] });
+      const tips = [4, 8, 12, 16, 20];
+      for (let i = 0; i < 5; i++) {
+        lm[tips[i]] = { x: 0.7, y: 0.8 - 0.50 * ratios[i], z: 0 };
+      }
+      return lm;
+    };
+
+    // 1. Hold Pinky (F2, ratio 0.27 << 0.5434) with Ring open (ratio 0.53 > 0.5039)
+    const holdF2Clean = buildRatiosHand([0.65, 0.95, 1.0, 0.53, 0.27]);
+    env.evaluate(`processLeftHand(${JSON.stringify(holdF2Clean)}, null, true)`);
+    assert.deepEqual(env.evaluate('Array.from(leftVoiceManager.activeVoices.keys())'), [41]); // F2
+
+    // 2. Ring finger sympathetically droops slightly below 0.5039 (ratio 0.495, margin 0.0089 < 0.04) for 2 video frames
+    //    plus duplicate RAF ticks (isNewVideoFrame = false) -> MUST NOT jump to G2!
+    const ringBorderlineDroop = buildRatiosHand([0.65, 0.95, 1.0, 0.495, 0.27]);
+    env.evaluate(`processLeftHand(${JSON.stringify(ringBorderlineDroop)}, null, true)`);
+    env.evaluate(`processLeftHand(${JSON.stringify(ringBorderlineDroop)}, null, false)`);
+    env.evaluate(`processLeftHand(${JSON.stringify(ringBorderlineDroop)}, null, true)`);
+    env.evaluate(`processLeftHand(${JSON.stringify(ringBorderlineDroop)}, null, false)`);
+    assert.deepEqual(env.evaluate('Array.from(leftVoiceManager.activeVoices.keys())'), [41]); // Still F2!
+
+    // Ring recovers on frame 3 -> debounce counter resets cleanly
+    env.evaluate(`processLeftHand(${JSON.stringify(holdF2Clean)}, null, true)`);
+    assert.deepEqual(env.evaluate('Array.from(leftVoiceManager.activeVoices.keys())'), [41]);
+
+    // 3. Even if Pinky recovers from a dropout with both Ring barely below (0.495) and Pinky deeply bent (0.27),
+    //    deepest-curl tie-breaking picks Pinky (F2=41) instead of Ring (G2=43)!
+    env.evaluate('releaseLeftHandNotes()');
+    env.flushTimeouts();
+    env.evaluate(`processLeftHand(${JSON.stringify(ringBorderlineDroop)}, null, true)`);
+    assert.deepEqual(env.evaluate('Array.from(leftVoiceManager.activeVoices.keys())'), [41]); // F2 wins over G2!
+
+    // 4. If Ring finger deliberately stays bent at 0.495 for 3 consecutive new video frames while Pinky is held,
+    //    it switches cleanly to G2 (43)
+    env.evaluate(`processLeftHand(${JSON.stringify(holdF2Clean)}, null, true)`);
+    env.evaluate(`processLeftHand(${JSON.stringify(ringBorderlineDroop)}, null, true)`);
+    env.evaluate(`processLeftHand(${JSON.stringify(ringBorderlineDroop)}, null, true)`);
+    assert.deepEqual(env.evaluate('Array.from(leftVoiceManager.activeVoices.keys())'), [41]); // Not yet on frame 2
+    env.evaluate(`processLeftHand(${JSON.stringify(ringBorderlineDroop)}, null, true)`);
+    env.flushTimeouts();
+    assert.deepEqual(env.evaluate('Array.from(leftVoiceManager.activeVoices.keys())'), [43]); // Switched to G2 on frame 3
+
+    // 5. Decisive curl on Pinky while holding G2 switches immediately on frame 1
+    env.evaluate(`processLeftHand(${JSON.stringify(buildRatiosHand([0.65, 0.95, 1.0, 0.45, 0.85]))}, null, true)`);
+    env.evaluate(`processLeftHand(${JSON.stringify(buildRatiosHand([0.65, 0.95, 1.0, 0.45, 0.27]))}, null, true)`);
+    env.flushTimeouts();
+    assert.deepEqual(env.evaluate('Array.from(leftVoiceManager.activeVoices.keys())'), [41]); // Immediate F2!
+  });
+
+  it('supports independent Left and Right per-hand calibration profiles and max-margin optimization in calibrate.js', () => {
+    // 1. Verify app.js applies independent perHand thresholds for Left vs Right
+    env.evaluate(`applyHandCalibration({
+      metricMode: 'ratioToMaxTip',
+      thresholds: [0.60, 0.75, 0.75, 0.75, 0.75],
+      perHand: {
+        Left: { metricMode: 'ratioToMaxTip', thresholds: [0.50, 0.65, 0.70, 0.45, 0.55] },
+        Right: { metricMode: 'ratioToMaxTip', thresholds: [0.55, 0.70, 0.75, 0.60, 0.55] }
+      }
+    })`);
+
+    assert.ok(env.doc.getElementById('lbl-calib-status').innerText.includes('L+R'));
+
+    // Build identical hand landmarks where Ring (index 3) ratio is 0.52:
+    // - On Left Hand (Ring thresh 0.45): 0.52 >= 0.45 -> NOT playing
+    // - On Right Hand (Ring thresh 0.60): 0.52 < 0.60 -> PLAYING
+    const lmRing052 = buildHandLandmarks({ palmX: 0.5, palmY: 0.8, activeFingers: [false, false, false, false, false] });
+    const tips = [4, 8, 12, 16, 20];
+    const ratios = [0.65, 0.95, 1.0, 0.52, 0.85];
+    for (let i = 0; i < 5; i++) {
+      lmRing052[tips[i]] = { x: 0.5, y: 0.8 - 0.50 * ratios[i], z: 0 };
+    }
+
+    const leftStates = Array.from(env.evaluate(`getFingerPlayStates(${JSON.stringify(lmRing052)}, 'Left')`));
+    const rightStates = Array.from(env.evaluate(`getFingerPlayStates(${JSON.stringify(lmRing052)}, 'Right')`));
+    assert.equal(leftStates[3], false);
+    assert.equal(rightStates[3], true);
+
+    // 2. Verify calibrate.js computeOptimalCalibration produces max-margin thresholds and perHand profiles
+    const vm = require('vm');
+    const calibCode = fs.readFileSync(path.join(__dirname, '..', 'calibrate.js'), 'utf8');
+    const calibCtx = vm.createContext({ console, Math, Date, JSON, Array, Object, Set, Number, String, Boolean });
+    vm.runInContext(calibCode, calibCtx);
+
+    const makeSample = (hand, expectedFingers, ratioToMaxTip) => ({
+      hand,
+      expectedFingers,
+      metrics: {
+        ratioToMaxTip,
+        ratioToPalm: ratioToMaxTip.map(v => v * 1.9),
+        tipToMcpOverPalm: ratioToMaxTip.map(v => v * 0.9)
+      }
+    });
+
+    const samples = [
+      // Left hand: Ring open=0.52, bent=0.40 -> max-margin midpoint = 0.46
+      makeSample('Left', [false, false, false, false, false], [0.65, 0.95, 1.0, 0.52, 0.85]),
+      makeSample('Left', [false, false, false, true, false], [0.65, 0.95, 1.0, 0.40, 0.85]),
+      // Right hand: Ring open=0.88, bent=0.48 -> max-margin midpoint = 0.68
+      makeSample('Right', [false, false, false, false, false], [0.65, 0.95, 1.0, 0.88, 0.85]),
+      makeSample('Right', [false, false, false, true, false], [0.65, 0.95, 1.0, 0.48, 0.85])
+    ];
+
+    const opt = vm.runInContext(`computeOptimalCalibration(${JSON.stringify(samples)})`, calibCtx);
+    assert.ok(opt.perHand.Left, 'Left per-hand calibration profile should be computed');
+    assert.ok(opt.perHand.Right, 'Right per-hand calibration profile should be computed');
+    // For ratioToMaxTip, Left Ring threshold is 0.46 while Right Ring threshold is 0.68 (or scaled if ratioToPalm wins with larger margin)
+    assert.ok(opt.perHand.Left.thresholds[3] < opt.perHand.Right.thresholds[3]);
+    assert.deepEqual(Array.from(opt.perHand.Left.fingerStats.map(s => s.label)), ['1:C3', '2:B2', '3:A2', '4:G2', '5:F2']);
+    assert.deepEqual(Array.from(opt.perHand.Right.fingerStats.map(s => s.label)), ['1:C4', '2:D4', '3:E4', '4:F4', '5:G4']);
+  });
+
+  it('captures ONLY the selected target hand (Left C3-F2 or Right C4-G4) in calibrate.js even when both hands are visible', () => {
+    const vm = require('vm');
+    const calibCode = fs.readFileSync(path.join(__dirname, '..', 'calibrate.js'), 'utf8');
+    const stubDoc = {
+      readyState: 'loading',
+      addEventListener: () => {},
+      getElementById: () => null,
+      querySelectorAll: () => []
+    };
+    const calibCtx = vm.createContext({
+      console, Math, Date, JSON, Array, Object, Set, Number, String, Boolean,
+      document: stubDoc,
+      window: { addEventListener: () => {} },
+      localStorage: { getItem: () => null, setItem: () => {} },
+      navigator: {}
+    });
+    vm.runInContext(calibCode, calibCtx);
+
+    const leftF2 = buildHandLandmarks({ palmX: 0.75, palmY: 0.7, activeFingers: [false, false, false, false, true] });
+    const rightOpen = buildHandLandmarks({ palmX: 0.25, palmY: 0.7, activeFingers: [false, false, false, false, false] });
+
+    // Both hands visible in frame; Left Hand is selected target with Pinky (F2) label
+    vm.runInContext(`
+      setTargetHand('Left');
+      activeLabelFingers = [false, false, false, false, true];
+      latestResults = {
+        landmarks: ${JSON.stringify([leftF2, rightOpen])},
+        handednesses: [[{ categoryName: 'Right', score: 0.95 }], [{ categoryName: 'Left', score: 0.95 }]]
+      };
+      captureCurrentSample();
+    `, calibCtx);
+
+    const afterLeftCapture = vm.runInContext('capturedSamples', calibCtx);
+    assert.equal(afterLeftCapture.length, 1, 'Must capture ONLY the targeted Left Hand, not both hands');
+    assert.equal(afterLeftCapture[0].hand, 'Left');
+    assert.deepEqual(Array.from(afterLeftCapture[0].expectedNotes), ['5:F2']);
+
+    // Switch target to Right Hand while only Left Hand is visible -> must NOT capture Left Hand as Right
+    const rightCaptureOk = vm.runInContext(`
+      setTargetHand('Right');
+      activeLabelFingers = [false, false, false, false, false];
+      latestResults = {
+        landmarks: ${JSON.stringify([leftF2])},
+        handednesses: [[{ categoryName: 'Right', score: 0.95 }]]
+      };
+      captureCurrentSample();
+    `, calibCtx);
+    assert.equal(rightCaptureOk, false);
+    assert.equal(vm.runInContext('capturedSamples.length', calibCtx), 1);
+
+    // Now show both hands -> captures ONLY the Right Hand with Right-Hand labels
+    const rightCaptureBoth = vm.runInContext(`
+      activeLabelFingers = [false, false, false, true, false];
+      latestResults = {
+        landmarks: ${JSON.stringify([leftF2, rightOpen])},
+        handednesses: [[{ categoryName: 'Right', score: 0.95 }], [{ categoryName: 'Left', score: 0.95 }]]
+      };
+      captureCurrentSample();
+    `, calibCtx);
+    assert.equal(rightCaptureBoth, true);
+    const samples = vm.runInContext('capturedSamples', calibCtx);
+    assert.equal(samples.length, 2);
+    assert.equal(samples[1].hand, 'Right');
+    assert.deepEqual(Array.from(samples[1].expectedNotes), ['4:F4']);
   });
 });
